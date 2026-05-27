@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name         全能下载助手 | 网盘+Openlist+AList+WebOS
+// @name         全能下载助手 | 网盘+Openlist+AList+WebOS (内嵌版)
 // @namespace    https://github.com/aitanser/universal-download-helper
 // @version      1.0.0
-// @author       鸿渚
-// @description  自动捕获30+网盘直链；主动获取百度、阿里、天翼、迅雷、夸克、移动六大网盘直链；支持浏览器/IDM下载、Aria2/cURL命令、BC链接、RPC推送（适配Motrix Next）。
+// @author       aitanser
+// @description  自动捕获30+网盘直链；主动获取百度、阿里、天翼、迅雷、夸克、移动六大网盘直链；支持浏览器/IDM下载、Aria2/cURL命令、BC链接、RPC推送（适配Motrix Next）。界面内嵌悬浮按钮+模态框。
 // @license      MIT
 // @supportURL   https://github.com/aitanser/universal-download-helper/issues
 // @homepageURL  https://github.com/aitanser/universal-download-helper
@@ -28,12 +28,10 @@
 
     // ---------- 配置模块 ----------
     const CONFIG = {
-        version: '1.3.0',
-        panelLeft: '20px',
-        panelTop: '80px',
+        version: '1.0.0',
+        themeColor: '#09AAFF',
         debug: true,
         maxConcurrent: 3,
-        themeColor: '#09AAFF',
         apiPatterns: [
             '/api/download', '/api/sharedownload', '/share/download',
             '/v2/file/download', '/v2/share_link/download',
@@ -63,8 +61,10 @@
         interceptorInstalled: false,
         currentMode: 'api',
         rpcConfig: { ...CONFIG.rpc },
-        panel: null,
-        activePan: null
+        activePan: null,
+        modalVisible: false,
+        floatingBtn: null,
+        modal: null
     };
 
     // ---------- 工具函数 ----------
@@ -180,7 +180,6 @@
         state.capturedFiles.push({ url, filename, referer, size });
         saveCapturedFiles();
         updateLinkCount();
-        renderFileList();
         log('捕获:', filename, url);
         showToast(`✓ 已捕获: ${filename.substring(0, 30)}`, '#4CAF50');
         return true;
@@ -191,8 +190,8 @@
             const removed = state.capturedFiles.splice(index, 1)[0];
             saveCapturedFiles();
             updateLinkCount();
-            renderFileList();
             showToast(`已移除: ${removed.filename}`, '#f44336');
+            if (state.modalVisible && state.modal) refreshModalContent();
         }
     }
 
@@ -200,13 +199,15 @@
         state.capturedFiles = [];
         saveCapturedFiles();
         updateLinkCount();
-        renderFileList();
         showToast('已清空所有链接', '#f44336');
+        if (state.modalVisible && state.modal) refreshModalContent();
     }
 
     function updateLinkCount() {
-        const cnt = document.getElementById('ud-link-count');
-        if (cnt) cnt.textContent = state.capturedFiles.length;
+        const cnt = state.capturedFiles.length;
+        const badge = document.getElementById('ud-badge');
+        if (badge) badge.textContent = cnt;
+        if (state.modalVisible && state.modal) refreshModalContent();
     }
 
     // ---------- 蓝奏云解析 ----------
@@ -433,8 +434,7 @@
         a.click();
     }
 
-    // ========== 网盘主动获取核心模块（无暗号验证） ==========
-    // 百度网盘相关
+    // ========== 网盘主动获取核心模块 ==========
     async function getBaiduBDUSS() {
         if (typeof GM_cookie !== 'undefined') {
             return new Promise(resolve => {
@@ -493,7 +493,6 @@
         return files;
     }
 
-    // 阿里云盘
     function getAliToken() {
         const token = localStorage.getItem('token');
         return token ? JSON.parse(token).access_token : '';
@@ -538,7 +537,6 @@
         return results.filter(Boolean);
     }
 
-    // 天翼云盘
     function getTianyiToken() {
         return localStorage.getItem('accessToken') || '';
     }
@@ -573,7 +571,6 @@
         return results.filter(Boolean);
     }
 
-    // 迅雷云盘
     function getXunleiToken() {
         for (let i=0; i<localStorage.length; i++) {
             const key = localStorage.key(i);
@@ -618,7 +615,6 @@
         return results.filter(Boolean);
     }
 
-    // 夸克网盘
     function getQuarkSelectedFiles() {
         try {
             const listDom = document.querySelector('.file-list');
@@ -659,7 +655,6 @@
         return files;
     }
 
-    // 移动云盘
     function getYidongSelectedFiles() {
         try {
             if (document.querySelector('.main_file_list')?.__vue__) {
@@ -696,7 +691,6 @@
         return results.filter(Boolean);
     }
 
-    // 蓝奏云主动获取
     async function fetchLanzouLinks() {
         const direct = await parseLanzou(location.href);
         return direct ? [{ url: direct, filename: extractFilenameFromUrl(direct) }] : [];
@@ -744,457 +738,313 @@
         }
     }
 
-    // ========== UI 样式及面板 ==========
-    function injectStyles() {
-        const color = CONFIG.themeColor;
-        const css = `
-            ::-webkit-scrollbar { width: 6px; height: 10px; }
-            ::-webkit-scrollbar-track { background: none; }
-            ::-webkit-scrollbar-thumb { background-color: rgba(85,85,85,.4); border-radius: 5px; }
-            ::-webkit-scrollbar-thumb:hover { background-color: rgba(85,85,85,.3); }
-
-            .ud-panel {
-                position: fixed;
-                left: ${GM_getValue('panelLeft', CONFIG.panelLeft)};
-                top: ${GM_getValue('panelTop', CONFIG.panelTop)};
-                width: 550px;
-                max-height: 80vh;
-                background: #fff;
-                color: #333;
-                border-radius: 12px;
-                box-shadow: 0 10px 30px rgba(0,0,0,0.15);
-                z-index: 10000;
-                font-size: 13px;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-                border: 1px solid rgba(0,0,0,0.08);
-                display: flex;
-                flex-direction: column;
-                user-select: none;
-            }
-
-            .ud-header {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                padding: 12px 16px;
-                border-bottom: 1px solid #eee;
-                cursor: move;
-                background: #fff;
-                border-radius: 12px 12px 0 0;
-            }
-            .ud-title {
-                font-size: 16px;
-                font-weight: 600;
-                color: ${color};
-                display: flex;
-                align-items: center;
-                gap: 8px;
-            }
-            .ud-close {
-                background: none;
-                border: none;
-                font-size: 20px;
-                cursor: pointer;
-                color: #999;
-                padding: 0 4px;
-                transition: color 0.2s;
-            }
-            .ud-close:hover { color: #f44336; }
-
-            .ud-content {
-                padding: 12px 16px;
-                flex: 1;
-                overflow-y: auto;
-            }
-
-            .ud-toolbar {
-                display: flex;
-                gap: 8px;
-                margin-bottom: 12px;
-                flex-wrap: wrap;
-            }
-            .ud-btn {
-                background: ${color};
-                border: none;
-                color: white;
-                padding: 6px 12px;
-                border-radius: 6px;
-                font-size: 12px;
-                cursor: pointer;
-                transition: opacity 0.2s;
-                display: inline-flex;
-                align-items: center;
-                gap: 4px;
-                font-weight: 500;
-            }
-            .ud-btn:hover { opacity: 0.85; }
-            .ud-btn.secondary { background: #6c757d; }
-            .ud-btn.success { background: #55af28; }
-            .ud-btn.warning { background: #da9328; }
-            .ud-btn.danger { background: #cc3235; }
-            .ud-btn.outline {
-                background: transparent;
-                border: 1px solid ${color};
-                color: ${color};
-            }
-
-            .ud-file-list {
-                max-height: 400px;
-                overflow-y: auto;
-                border: 1px solid #eee;
-                border-radius: 8px;
-                background: #fafafa;
-            }
-            .ud-file-item {
-                display: flex;
-                align-items: center;
-                padding: 8px 12px;
-                border-bottom: 1px solid #eee;
-                transition: background 0.15s;
-                background: #fff;
-            }
-            .ud-file-item:last-child { border-bottom: none; }
-            .ud-file-item:hover { background: #f5f5f5; }
-
-            .ud-file-name {
-                flex: 0 0 180px;
-                white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
-                font-weight: 500;
-                cursor: default;
-            }
-            .ud-file-size {
-                margin-left: 6px;
-                color: #f56c6c;
-                font-size: 11px;
-                font-weight: normal;
-            }
-
-            .ud-file-link {
-                flex: 1;
-                margin: 0 10px;
-                white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
-                color: ${color};
-                cursor: pointer;
-                text-decoration: none;
-                font-family: monospace;
-                font-size: 11px;
-            }
-            .ud-file-link:hover { text-decoration: underline; }
-
-            .ud-file-actions {
-                display: flex;
-                gap: 6px;
-                flex-shrink: 0;
-            }
-            .ud-action-btn {
-                background: #e9ecef;
-                border: none;
-                color: #333;
-                padding: 4px 8px;
-                border-radius: 4px;
-                font-size: 11px;
-                cursor: pointer;
-                transition: all 0.15s;
-            }
-            .ud-action-btn:hover { background: #dee2e6; }
-            .ud-action-btn.danger { background: #f8d7da; color: #721c24; }
-            .ud-action-btn.danger:hover { background: #f5c6cb; }
-            .ud-action-btn.primary { background: ${color}; color: white; }
-
-            .ud-footer {
-                padding: 10px 16px;
-                border-top: 1px solid #eee;
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                font-size: 12px;
-                color: #888;
-            }
-
-            .ud-dropdown {
-                position: relative;
-                display: inline-block;
-            }
-            .ud-dropdown-menu {
-                position: absolute;
-                top: 100%;
-                left: 0;
-                background: white;
-                border: 1px solid #ddd;
-                border-radius: 6px;
-                box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-                z-index: 10;
-                min-width: 120px;
-                display: none;
-            }
-            .ud-dropdown:hover .ud-dropdown-menu { display: block; }
-            .ud-dropdown-item {
-                padding: 8px 16px;
-                cursor: pointer;
-                white-space: nowrap;
-            }
-            .ud-dropdown-item:hover { background: #f0f0f0; }
-
-            .ud-tooltip {
-                position: absolute;
-                background: #333;
-                color: white;
-                padding: 6px 10px;
-                border-radius: 6px;
-                font-size: 12px;
-                z-index: 10001;
-                max-width: 300px;
-                word-break: break-word;
-                pointer-events: none;
-                display: none;
-            }
-
-            @media (max-width: 600px) {
-                .ud-panel { width: 95vw; left: 2.5vw !important; }
-            }
+    // ========== UI：悬浮按钮 + 模态框 ==========
+    function createFloatingButton() {
+        if (document.getElementById('ud-floating-btn')) return;
+        const btn = document.createElement('div');
+        btn.id = 'ud-floating-btn';
+        btn.innerHTML = `
+            <div style="position:relative;">
+                <span style="font-size:24px;">⚡</span>
+                <span id="ud-badge" style="position:absolute; top:-8px; right:-8px; background:${CONFIG.themeColor}; color:#fff; border-radius:10px; padding:2px 6px; font-size:10px; font-weight:bold;">0</span>
+            </div>
         `;
-        GM_addStyle(css);
-    }
+        btn.style.cssText = `
+            position: fixed;
+            bottom: 80px;
+            right: 20px;
+            width: 56px;
+            height: 56px;
+            background: ${CONFIG.themeColor};
+            border-radius: 50%;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            cursor: pointer;
+            z-index: 10000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: transform 0.2s;
+            user-select: none;
+        `;
+        btn.onmouseenter = () => btn.style.transform = 'scale(1.05)';
+        btn.onmouseleave = () => btn.style.transform = 'scale(1)';
+        btn.onclick = () => toggleModal();
+        document.body.appendChild(btn);
+        state.floatingBtn = btn;
 
-    function renderFileList() {
-        const container = document.getElementById('ud-file-list');
-        if (!container) return;
-
-        const files = state.capturedFiles;
-        const countSpan = document.getElementById('ud-link-count');
-        if (countSpan) countSpan.textContent = files.length;
-
-        if (!files.length) {
-            container.innerHTML = '<div style="text-align:center; color:#999; padding:20px;">暂无捕获的链接</div>';
-            return;
+        // 拖拽移动悬浮按钮
+        let drag = false, startX, startY, startLeft, startBottom;
+        btn.onmousedown = (e) => {
+            if (e.target === btn || btn.contains(e.target)) {
+                drag = true;
+                startX = e.clientX;
+                startY = e.clientY;
+                const rect = btn.getBoundingClientRect();
+                startLeft = rect.left;
+                startBottom = window.innerHeight - rect.bottom;
+                btn.style.transition = 'none';
+                e.preventDefault();
+            }
+        };
+        window.onmousemove = (e) => {
+            if (!drag) return;
+            let left = startLeft + (e.clientX - startX);
+            let bottom = startBottom - (e.clientY - startY);
+            left = Math.min(Math.max(0, left), window.innerWidth - btn.offsetWidth);
+            bottom = Math.min(Math.max(0, bottom), window.innerHeight - btn.offsetHeight);
+            btn.style.left = left + 'px';
+            btn.style.bottom = bottom + 'px';
+            btn.style.right = 'auto';
+            btn.style.top = 'auto';
+        };
+        window.onmouseup = () => {
+            if (drag) {
+                drag = false;
+                btn.style.transition = '';
+                GM_setValue('btnLeft', btn.style.left);
+                GM_setValue('btnBottom', btn.style.bottom);
+            }
+        };
+        // 恢复位置
+        const savedLeft = GM_getValue('btnLeft');
+        const savedBottom = GM_getValue('btnBottom');
+        if (savedLeft && savedBottom) {
+            btn.style.left = savedLeft;
+            btn.style.bottom = savedBottom;
+            btn.style.right = 'auto';
         }
-
-        let html = '';
-        files.forEach((f, i) => {
-            const sizeDisplay = f.size ? `<span class="ud-file-size">${f.size}</span>` : '';
-            let actions = '';
-
-            if (state.currentMode === 'api') {
-                actions = `
-                    <button class="ud-action-btn primary" data-action="download" data-index="${i}">⬇️下载</button>
-                    <button class="ud-action-btn" data-action="copy-link" data-index="${i}">📋复制</button>
-                `;
-            } else if (state.currentMode === 'aria') {
-                actions = `<button class="ud-action-btn" data-action="copy" data-type="aria" data-index="${i}">📋复制命令</button>`;
-            } else if (state.currentMode === 'curl') {
-                actions = `<button class="ud-action-btn" data-action="copy" data-type="curl" data-index="${i}">📋复制命令</button>`;
-            } else if (state.currentMode === 'bc') {
-                actions = `<button class="ud-action-btn" data-action="copy" data-type="bc" data-index="${i}">📋复制BC链接</button>`;
-            } else if (state.currentMode === 'rpc') {
-                actions = `<button class="ud-action-btn primary" data-action="rpc" data-index="${i}">🚀推送</button>`;
-            }
-
-            html += `
-                <div class="ud-file-item" data-index="${i}">
-                    <span class="ud-file-name" title="${f.filename}">📄 ${f.filename}${sizeDisplay}</span>
-                    <span class="ud-file-link" data-action="copy-link" data-index="${i}" title="点击复制链接">${f.url}</span>
-                    <div class="ud-file-actions">
-                        ${actions}
-                        <button class="ud-action-btn danger" data-action="remove" data-index="${i}">✖</button>
-                    </div>
-                </div>
-            `;
-        });
-        container.innerHTML = html;
     }
 
-    function updateModeDisplay() {
-        const modeBtn = document.getElementById('ud-mode-btn');
-        if (!modeBtn) return;
-        const modeNames = {
-            api: '🌐 直接下载',
-            aria: '⬇️ Aria2 命令',
-            curl: '📜 cURL 命令',
-            bc: '🐿️ BC 链接',
-            rpc: '🚀 RPC 推送'
-        };
-        modeBtn.innerHTML = `${modeNames[state.currentMode] || '选择模式'} ▼`;
-    }
-
-    function createPanel() {
-        if (document.getElementById('ud-panel')) return;
-        injectStyles();
-
-        const panel = document.createElement('div');
-        panel.id = 'ud-panel';
-        panel.className = 'ud-panel';
-        panel.innerHTML = `
-            <div class="ud-header" id="ud-drag-handle">
-                <span class="ud-title">
-                    <span>⚡ 全能下载助手 v${CONFIG.version}</span>
-                    <span id="ud-link-count" style="background: ${CONFIG.themeColor}; color: white; padding: 2px 8px; border-radius: 20px; font-size: 12px;">0</span>
-                </span>
-                <button class="ud-close" id="ud-close-panel" title="关闭面板">✕</button>
-            </div>
-            <div class="ud-content">
-                <div class="ud-toolbar">
-                    <div class="ud-dropdown">
-                        <button class="ud-btn" id="ud-mode-btn">🌐 直接下载 ▼</button>
-                        <div class="ud-dropdown-menu" id="ud-mode-menu">
-                            <div class="ud-dropdown-item" data-mode="api">🌐 直接下载</div>
-                            <div class="ud-dropdown-item" data-mode="aria">⬇️ Aria2 命令</div>
-                            <div class="ud-dropdown-item" data-mode="curl">📜 cURL 命令</div>
-                            <div class="ud-dropdown-item" data-mode="bc">🐿️ BC 链接</div>
-                            <div class="ud-dropdown-item" data-mode="rpc">🚀 RPC 推送</div>
-                        </div>
-                    </div>
-                    <button class="ud-btn" id="ud-scan-page">🔍 扫描页面</button>
-                    <button class="ud-btn" id="ud-fetch-pan">📥 获取网盘</button>
-                    <button class="ud-btn secondary" id="ud-settings">⚙️ RPC设置</button>
-                </div>
-
-                <div class="ud-file-list" id="ud-file-list">
-                    <div style="text-align:center; color:#999; padding:20px;">暂无捕获的链接</div>
-                </div>
-            </div>
-            <div class="ud-footer">
-                <div>
-                    <button class="ud-btn outline" id="ud-batch-import" style="margin-right:6px;">📥 批量导入</button>
-                    <button class="ud-btn outline" id="ud-manual-add">➕ 手动添加</button>
-                </div>
-                <div>
-                    <button class="ud-btn success" id="ud-batch-export">📋 导出全部</button>
-                    <button class="ud-btn danger" id="ud-clear-all">🗑️ 清空</button>
-                    <button class="ud-btn" id="ud-batch-rpc" style="background:#E91E63;">🚀 批量RPC</button>
-                </div>
-            </div>
-            <div id="ud-tooltip" class="ud-tooltip"></div>
+    function createModal() {
+        if (state.modal) state.modal.remove();
+        const modalDiv = document.createElement('div');
+        modalDiv.id = 'ud-modal';
+        modalDiv.style.cssText = `
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%) scale(0.95);
+            width: 700px;
+            max-width: 90vw;
+            background: rgba(30,30,35,0.98);
+            backdrop-filter: blur(12px);
+            border-radius: 24px;
+            box-shadow: 0 20px 35px rgba(0,0,0,0.3);
+            z-index: 10020;
+            color: #fff;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            transition: transform 0.2s, opacity 0.2s;
+            opacity: 0;
+            display: none;
         `;
-        document.body.appendChild(panel);
-        state.panel = panel;
+        modalDiv.innerHTML = `
+            <div id="modal-drag-handle" style="cursor:move; padding:16px 20px; border-bottom:1px solid rgba(255,255,255,0.1); display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-size:18px; font-weight:600; color:${CONFIG.themeColor};">⚡ 全能下载助手 v${CONFIG.version}</span>
+                <button id="modal-close" style="background:none; border:none; color:#aaa; font-size:24px; cursor:pointer;">&times;</button>
+            </div>
+            <div class="ud-modal-content" style="padding:20px;"></div>
+        `;
+        document.body.appendChild(modalDiv);
+        state.modal = modalDiv;
 
-        bindPanelEvents();
-        setupDrag(panel.querySelector('#ud-drag-handle'), panel);
-
-        const left = GM_getValue('panelLeft', CONFIG.panelLeft);
-        const top = GM_getValue('panelTop', CONFIG.panelTop);
-        panel.style.left = left;
-        panel.style.top = top;
-
-        renderFileList();
-        updateModeDisplay();
-    }
-
-    function bindPanelEvents() {
-        const panel = state.panel;
-
-        panel.querySelector('#ud-close-panel').onclick = () => {
-            panel.style.display = 'none';
-            showToast('面板已隐藏，可通过菜单重新打开', '#666');
-        };
-
-        panel.querySelectorAll('[data-mode]').forEach(item => {
-            item.onclick = () => {
-                state.currentMode = item.dataset.mode;
-                updateModeDisplay();
-                renderFileList();
-            };
-        });
-
-        panel.querySelector('#ud-scan-page').onclick = scanPageLinks;
-        panel.querySelector('#ud-fetch-pan').onclick = fetchPanLinks;
-        panel.querySelector('#ud-settings').onclick = showRpcSettings;
-        panel.querySelector('#ud-batch-import').onclick = batchImportLinks;
-        panel.querySelector('#ud-manual-add').onclick = manualAddLink;
-        panel.querySelector('#ud-batch-export').onclick = batchExport;
-        panel.querySelector('#ud-clear-all').onclick = clearAll;
-        panel.querySelector('#ud-batch-rpc').onclick = batchSendToRPC;
-
-        const list = panel.querySelector('#ud-file-list');
-        list.addEventListener('click', (e) => {
-            const target = e.target.closest('[data-action]');
-            if (!target) return;
-            const index = target.dataset.index;
-            const action = target.dataset.action;
-            const file = state.capturedFiles[index];
-
-            if (action === 'remove') {
-                removeFile(index);
-            } else if (action === 'download') {
-                directDownload(file);
-            } else if (action === 'copy') {
-                let txt = '';
-                if (target.dataset.type === 'aria') txt = toAria2Command(file);
-                else if (target.dataset.type === 'curl') txt = toCurlCommand(file);
-                else if (target.dataset.type === 'bc') txt = toBCLink(file);
-                else txt = file.url;
-                GM_setClipboard(txt);
-                showToast('已复制', '#4CAF50');
-            } else if (action === 'rpc') {
-                target.textContent = '⏳';
-                target.disabled = true;
-                sendToRPC(file).then(ok => {
-                    showToast(ok ? '推送成功' : '推送失败', ok ? '#4CAF50' : '#f44336');
-                    target.textContent = '🚀推送';
-                    target.disabled = false;
-                });
-            } else if (action === 'copy-link') {
-                GM_setClipboard(file.url);
-                showToast('链接已复制', '#4CAF50');
+        // 拖拽模态框
+        const dragHandle = modalDiv.querySelector('#modal-drag-handle');
+        let isDragging = false, startX, startY, startLeft, startTop;
+        dragHandle.addEventListener('mousedown', (e) => {
+            if (e.target === dragHandle || dragHandle.contains(e.target)) {
+                isDragging = true;
+                startX = e.clientX;
+                startY = e.clientY;
+                const rect = modalDiv.getBoundingClientRect();
+                startLeft = rect.left;
+                startTop = rect.top;
+                modalDiv.style.transition = 'none';
+                e.preventDefault();
             }
-        });
-
-        list.addEventListener('mouseenter', (e) => {
-            const nameEl = e.target.closest('.ud-file-name');
-            if (nameEl) {
-                const index = nameEl.closest('[data-index]')?.dataset.index;
-                if (index !== undefined) {
-                    const file = state.capturedFiles[index];
-                    const tip = `${file.filename}  ${file.size || ''}`;
-                    const tooltip = document.getElementById('ud-tooltip');
-                    tooltip.textContent = tip;
-                    tooltip.style.display = 'block';
-                    const rect = nameEl.getBoundingClientRect();
-                    tooltip.style.left = rect.left + 'px';
-                    tooltip.style.top = (rect.bottom + 5) + 'px';
-                }
-            }
-        }, true);
-        list.addEventListener('mouseleave', (e) => {
-            if (e.target.closest('.ud-file-name')) {
-                document.getElementById('ud-tooltip').style.display = 'none';
-            }
-        }, true);
-    }
-
-    function setupDrag(handle, panel) {
-        let dragging = false, startX, startY, startLeft, startTop;
-        handle.addEventListener('mousedown', (e) => {
-            if (e.button !== 0) return;
-            dragging = true;
-            startX = e.clientX;
-            startY = e.clientY;
-            startLeft = parseInt(panel.style.left) || panel.offsetLeft;
-            startTop = parseInt(panel.style.top) || panel.offsetTop;
-            panel.style.transition = 'none';
-            e.preventDefault();
         });
         window.addEventListener('mousemove', (e) => {
-            if (!dragging) return;
-            let l = startLeft + e.clientX - startX;
-            let t = startTop + e.clientY - startY;
-            l = Math.min(Math.max(0, l), window.innerWidth - panel.offsetWidth);
-            t = Math.min(Math.max(0, t), window.innerHeight - panel.offsetHeight);
-            panel.style.left = l + 'px';
-            panel.style.top = t + 'px';
+            if (!isDragging) return;
+            let left = startLeft + (e.clientX - startX);
+            let top = startTop + (e.clientY - startY);
+            left = Math.min(Math.max(0, left), window.innerWidth - modalDiv.offsetWidth);
+            top = Math.min(Math.max(0, top), window.innerHeight - modalDiv.offsetHeight);
+            modalDiv.style.left = left + 'px';
+            modalDiv.style.top = top + 'px';
+            modalDiv.style.transform = 'none';
         });
         window.addEventListener('mouseup', () => {
-            if (dragging) {
-                dragging = false;
-                panel.style.transition = '';
-                GM_setValue('panelLeft', panel.style.left);
-                GM_setValue('panelTop', panel.style.top);
+            if (isDragging) {
+                isDragging = false;
+                modalDiv.style.transition = '';
             }
         });
+        modalDiv.querySelector('#modal-close').onclick = () => toggleModal(false);
+    }
+
+    function getModeName(mode) {
+        const names = { api: '🌐 直接下载', aria: '⬇️ Aria2 命令', curl: '📜 cURL 命令', bc: '🐿️ BC 链接', rpc: '🚀 RPC 推送' };
+        return names[mode] || '选择模式';
+    }
+
+    function refreshModalContent() {
+        if (!state.modal || !state.modalVisible) return;
+        const contentDiv = state.modal.querySelector('.ud-modal-content');
+        const files = state.capturedFiles;
+        const mode = state.currentMode;
+        let html = `
+            <div style="display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap; border-bottom:1px solid rgba(255,255,255,0.2); padding-bottom:12px;">
+                <div class="ud-dropdown" style="position:relative;">
+                    <button id="modal-mode-btn" style="background:${CONFIG.themeColor}; border:none; color:#fff; padding:6px 12px; border-radius:20px; cursor:pointer;">${getModeName(mode)} ▼</button>
+                    <div id="modal-mode-menu" style="position:absolute; top:100%; left:0; background:#2a2a2e; border-radius:12px; box-shadow:0 4px 12px rgba(0,0,0,0.3); display:none; z-index:100;">
+                        <div data-mode="api" class="mode-item" style="padding:8px 16px; cursor:pointer;">🌐 直接下载</div>
+                        <div data-mode="aria" class="mode-item" style="padding:8px 16px; cursor:pointer;">⬇️ Aria2 命令</div>
+                        <div data-mode="curl" class="mode-item" style="padding:8px 16px; cursor:pointer;">📜 cURL 命令</div>
+                        <div data-mode="bc" class="mode-item" style="padding:8px 16px; cursor:pointer;">🐿️ BC 链接</div>
+                        <div data-mode="rpc" class="mode-item" style="padding:8px 16px; cursor:pointer;">🚀 RPC 推送</div>
+                    </div>
+                </div>
+                <button id="modal-scan" style="background:#444; border:none; color:#fff; padding:6px 12px; border-radius:20px; cursor:pointer;">🔍 扫描页面</button>
+                <button id="modal-fetch" style="background:#444; border:none; color:#fff; padding:6px 12px; border-radius:20px; cursor:pointer;">📥 获取网盘</button>
+                <button id="modal-settings" style="background:#444; border:none; color:#fff; padding:6px 12px; border-radius:20px; cursor:pointer;">⚙️ RPC设置</button>
+            </div>
+            <div id="modal-file-list" style="max-height:400px; overflow-y:auto; margin-bottom:16px;">
+        `;
+        if (files.length === 0) {
+            html += '<div style="text-align:center; color:#aaa; padding:20px;">暂无捕获的链接</div>';
+        } else {
+            files.forEach((f, i) => {
+                const sizeDisplay = f.size ? `<span style="color:#f56c6c; margin-left:6px;">${f.size}</span>` : '';
+                let actions = '';
+                if (mode === 'api') {
+                    actions = `<button class="action-btn" data-action="download" data-index="${i}" style="background:#555; border:none; color:#fff; padding:4px 8px; border-radius:16px; cursor:pointer;">⬇️下载</button>
+                               <button class="action-btn" data-action="copy-link" data-index="${i}" style="background:#555; border:none; color:#fff; padding:4px 8px; border-radius:16px; cursor:pointer;">📋复制</button>`;
+                } else if (mode === 'aria') {
+                    actions = `<button class="action-btn" data-action="copy" data-type="aria" data-index="${i}" style="background:#555; border:none; color:#fff; padding:4px 8px; border-radius:16px; cursor:pointer;">📋复制命令</button>`;
+                } else if (mode === 'curl') {
+                    actions = `<button class="action-btn" data-action="copy" data-type="curl" data-index="${i}" style="background:#555; border:none; color:#fff; padding:4px 8px; border-radius:16px; cursor:pointer;">📋复制命令</button>`;
+                } else if (mode === 'bc') {
+                    actions = `<button class="action-btn" data-action="copy" data-type="bc" data-index="${i}" style="background:#555; border:none; color:#fff; padding:4px 8px; border-radius:16px; cursor:pointer;">📋复制BC链接</button>`;
+                } else if (mode === 'rpc') {
+                    actions = `<button class="action-btn primary" data-action="rpc" data-index="${i}" style="background:${CONFIG.themeColor}; border:none; color:#fff; padding:4px 8px; border-radius:16px; cursor:pointer;">🚀推送</button>`;
+                }
+                html += `
+                    <div class="file-item" data-index="${i}" style="display:flex; align-items:center; padding:8px 0; border-bottom:1px solid rgba(255,255,255,0.1);">
+                        <span style="flex:0 0 180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${f.filename}">📄 ${f.filename}${sizeDisplay}</span>
+                        <span style="flex:1; margin:0 10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:${CONFIG.themeColor}; cursor:pointer;" class="copy-link-trigger" data-index="${i}">${f.url}</span>
+                        <div style="display:flex; gap:6px;">
+                            ${actions}
+                            <button class="action-btn danger" data-action="remove" data-index="${i}" style="background:#cc3235; border:none; color:#fff; padding:4px 8px; border-radius:16px; cursor:pointer;">✖</button>
+                        </div>
+                    </div>
+                `;
+            });
+        }
+        html += `</div>
+            <div style="display:flex; justify-content:space-between; margin-top:8px;">
+                <div>
+                    <button id="modal-import" style="background:transparent; border:1px solid ${CONFIG.themeColor}; color:${CONFIG.themeColor}; padding:6px 12px; border-radius:20px; cursor:pointer;">📥 批量导入</button>
+                    <button id="modal-add" style="background:transparent; border:1px solid ${CONFIG.themeColor}; color:${CONFIG.themeColor}; padding:6px 12px; border-radius:20px; margin-left:8px; cursor:pointer;">➕ 手动添加</button>
+                </div>
+                <div>
+                    <button id="modal-export" style="background:#55af28; border:none; color:#fff; padding:6px 12px; border-radius:20px; cursor:pointer;">📋 导出全部</button>
+                    <button id="modal-clear" style="background:#cc3235; border:none; color:#fff; padding:6px 12px; border-radius:20px; margin-left:8px; cursor:pointer;">🗑️ 清空</button>
+                    <button id="modal-batch-rpc" style="background:#E91E63; border:none; color:#fff; padding:6px 12px; border-radius:20px; margin-left:8px; cursor:pointer;">🚀 批量RPC</button>
+                </div>
+            </div>
+        `;
+        contentDiv.innerHTML = html;
+
+        // 绑定事件
+        const modeBtn = contentDiv.querySelector('#modal-mode-btn');
+        const modeMenu = contentDiv.querySelector('#modal-mode-menu');
+        if (modeBtn) {
+            modeBtn.onclick = (e) => {
+                e.stopPropagation();
+                modeMenu.style.display = modeMenu.style.display === 'block' ? 'none' : 'block';
+            };
+            document.addEventListener('click', function closeMenu(e) {
+                if (!state.modal || !state.modal.contains(e.target) || e.target === modeBtn) return;
+                modeMenu.style.display = 'none';
+            });
+        }
+        contentDiv.querySelectorAll('.mode-item').forEach(item => {
+            item.onclick = () => {
+                state.currentMode = item.dataset.mode;
+                refreshModalContent();
+            };
+        });
+        contentDiv.querySelector('#modal-scan')?.addEventListener('click', () => { scanPageLinks(); refreshModalContent(); });
+        contentDiv.querySelector('#modal-fetch')?.addEventListener('click', () => { fetchPanLinks().then(() => refreshModalContent()); });
+        contentDiv.querySelector('#modal-settings')?.addEventListener('click', () => showRpcSettings());
+        contentDiv.querySelector('#modal-import')?.addEventListener('click', () => { batchImportLinks(); setTimeout(refreshModalContent, 500); });
+        contentDiv.querySelector('#modal-add')?.addEventListener('click', () => { manualAddLink(); refreshModalContent(); });
+        contentDiv.querySelector('#modal-export')?.addEventListener('click', () => batchExport());
+        contentDiv.querySelector('#modal-clear')?.addEventListener('click', () => { clearAll(); refreshModalContent(); });
+        contentDiv.querySelector('#modal-batch-rpc')?.addEventListener('click', () => batchSendToRPC());
+
+        const fileListDiv = contentDiv.querySelector('#modal-file-list');
+        if (fileListDiv) {
+            fileListDiv.addEventListener('click', async (e) => {
+                const btn = e.target.closest('.action-btn');
+                if (btn) {
+                    const index = btn.dataset.index;
+                    const action = btn.dataset.action;
+                    const file = state.capturedFiles[index];
+                    if (!file) return;
+                    if (action === 'remove') {
+                        removeFile(index);
+                        refreshModalContent();
+                    } else if (action === 'download') {
+                        directDownload(file);
+                    } else if (action === 'copy') {
+                        let txt = '';
+                        if (btn.dataset.type === 'aria') txt = toAria2Command(file);
+                        else if (btn.dataset.type === 'curl') txt = toCurlCommand(file);
+                        else if (btn.dataset.type === 'bc') txt = toBCLink(file);
+                        else txt = file.url;
+                        GM_setClipboard(txt);
+                        showToast('已复制', '#4CAF50');
+                    } else if (action === 'rpc') {
+                        btn.textContent = '⏳';
+                        btn.disabled = true;
+                        const ok = await sendToRPC(file);
+                        showToast(ok ? '推送成功' : '推送失败', ok ? '#4CAF50' : '#f44336');
+                        btn.textContent = '🚀推送';
+                        btn.disabled = false;
+                    }
+                }
+                const linkSpan = e.target.closest('.copy-link-trigger');
+                if (linkSpan) {
+                    const idx = linkSpan.dataset.index;
+                    const file = state.capturedFiles[idx];
+                    if (file) {
+                        GM_setClipboard(file.url);
+                        showToast('链接已复制', '#4CAF50');
+                    }
+                }
+            });
+        }
+    }
+
+    function toggleModal(show) {
+        if (!state.modal) createModal();
+        const newState = show !== undefined ? show : !state.modalVisible;
+        if (newState) {
+            refreshModalContent();
+            state.modal.style.display = 'block';
+            setTimeout(() => {
+                state.modal.style.transform = 'translate(-50%, -50%) scale(1)';
+                state.modal.style.opacity = '1';
+            }, 10);
+            state.modalVisible = true;
+        } else {
+            state.modal.style.transform = 'translate(-50%, -50%) scale(0.95)';
+            state.modal.style.opacity = '0';
+            setTimeout(() => {
+                state.modal.style.display = 'none';
+            }, 200);
+            state.modalVisible = false;
+        }
     }
 
     function batchExport() {
@@ -1209,45 +1059,104 @@
         showToast(`已导出 ${state.capturedFiles.length} 条`, '#4CAF50');
     }
 
+    // 美化版 RPC 设置子菜单
     function showRpcSettings() {
-        const dlg = document.createElement('div');
-        dlg.style.cssText = 'position:fixed;top:30%;left:50%;transform:translate(-50%,-50%);background:#fff;color:#333;padding:20px;border-radius:12px;z-index:10002;box-shadow:0 0 20px rgba(0,0,0,0.2);';
-        dlg.innerHTML = `
-            <h3 style="color:${CONFIG.themeColor};">⚙️ RPC设置 (适配Motrix Next)</h3>
-            <div style="display:flex;flex-direction:column;gap:10px;min-width:300px;">
-                <label>域名: <input id="rpc-domain" value="${state.rpcConfig.domain}" style="width:200px;"></label>
-                <label>端口: <input id="rpc-port" value="${state.rpcConfig.port}" style="width:200px;"></label>
-                <label>路径: <input id="rpc-path" value="${state.rpcConfig.path}" style="width:200px;"></label>
-                <label>Token: <input id="rpc-token" value="${state.rpcConfig.token}" style="width:200px;"></label>
-                <label>目录: <input id="rpc-dir" value="${state.rpcConfig.dir}" style="width:200px;"></label>
-                <label>主题颜色: <input type="color" id="theme-color" value="${CONFIG.themeColor}"></label>
+        const existing = document.getElementById('ud-rpc-settings');
+        if (existing) existing.remove();
+
+        const modal = document.createElement('div');
+        modal.id = 'ud-rpc-settings';
+        modal.style.cssText = `
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%) scale(0.95);
+            background: rgba(30, 30, 35, 0.98);
+            backdrop-filter: blur(12px);
+            color: #fff;
+            padding: 24px 28px;
+            border-radius: 24px;
+            z-index: 10030;
+            box-shadow: 0 20px 35px rgba(0, 0, 0, 0.3);
+            width: 460px;
+            max-width: 90vw;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            transition: transform 0.2s ease, opacity 0.2s ease;
+            opacity: 0;
+        `;
+        modal.innerHTML = `
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid rgba(255,255,255,0.15); padding-bottom: 12px;">
+                <h3 style="margin:0; font-size: 18px; font-weight: 600; color: ${CONFIG.themeColor}; display: flex; align-items: center; gap: 8px;">
+                    <span>⚙️</span> RPC 设置
+                    <span style="font-size: 12px; background: rgba(255,255,255,0.2); padding: 2px 8px; border-radius: 20px;">Motrix Next</span>
+                </h3>
+                <button id="ud-rpc-close" style="background: none; border: none; color: #aaa; font-size: 24px; cursor: pointer;">&times;</button>
             </div>
-            <div style="margin-top:15px;text-align:right;">
-                <button id="rpc-save" style="background:${CONFIG.themeColor};border:none;color:#fff;padding:6px 16px;border-radius:6px;margin-right:8px;">保存</button>
-                <button id="rpc-cancel" style="background:#f44336;border:none;color:#fff;padding:6px 16px;border-radius:6px;">取消</button>
+            <div style="display: flex; flex-direction: column; gap: 16px;">
+                <label style="display: flex; justify-content: space-between; align-items: center; gap: 12px;">
+                    <span style="flex: 0 0 70px;">域名</span>
+                    <input id="rpc-domain" type="text" value="${state.rpcConfig.domain}" style="flex:1; background: rgba(0,0,0,0.5); border: 1px solid #444; border-radius: 8px; padding: 8px 12px; color: #fff;">
+                </label>
+                <label style="display: flex; justify-content: space-between; align-items: center; gap: 12px;">
+                    <span style="flex: 0 0 70px;">端口</span>
+                    <input id="rpc-port" type="text" value="${state.rpcConfig.port}" style="flex:1; background: rgba(0,0,0,0.5); border: 1px solid #444; border-radius: 8px; padding: 8px 12px; color: #fff;">
+                </label>
+                <label style="display: flex; justify-content: space-between; align-items: center; gap: 12px;">
+                    <span style="flex: 0 0 70px;">路径</span>
+                    <input id="rpc-path" type="text" value="${state.rpcConfig.path}" style="flex:1; background: rgba(0,0,0,0.5); border: 1px solid #444; border-radius: 8px; padding: 8px 12px; color: #fff;">
+                </label>
+                <label style="display: flex; justify-content: space-between; align-items: center; gap: 12px;">
+                    <span style="flex: 0 0 70px;">Token</span>
+                    <input id="rpc-token" type="text" value="${state.rpcConfig.token}" style="flex:1; background: rgba(0,0,0,0.5); border: 1px solid #444; border-radius: 8px; padding: 8px 12px; color: #fff;" placeholder="可选">
+                </label>
+                <label style="display: flex; justify-content: space-between; align-items: center; gap: 12px;">
+                    <span style="flex: 0 0 70px;">目录</span>
+                    <input id="rpc-dir" type="text" value="${state.rpcConfig.dir}" style="flex:1; background: rgba(0,0,0,0.5); border: 1px solid #444; border-radius: 8px; padding: 8px 12px; color: #fff;">
+                </label>
+                <label style="display: flex; justify-content: space-between; align-items: center; gap: 12px;">
+                    <span style="flex: 0 0 70px;">主题色</span>
+                    <input type="color" id="theme-color" value="${CONFIG.themeColor}" style="width: 50px; height: 36px; background: #333; border: 1px solid #555; border-radius: 8px; cursor: pointer;">
+                </label>
+            </div>
+            <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 28px;">
+                <button id="rpc-save" style="background: ${CONFIG.themeColor}; border: none; color: #fff; padding: 8px 20px; border-radius: 40px; font-weight: 500; cursor: pointer;">保存</button>
+                <button id="rpc-cancel" style="background: rgba(255,255,255,0.15); border: none; color: #fff; padding: 8px 20px; border-radius: 40px; cursor: pointer;">取消</button>
             </div>
         `;
-        document.body.appendChild(dlg);
+        document.body.appendChild(modal);
+        setTimeout(() => {
+            modal.style.transform = 'translate(-50%, -50%) scale(1)';
+            modal.style.opacity = '1';
+        }, 10);
 
-        dlg.querySelector('#rpc-save').onclick = () => {
-            state.rpcConfig.domain = dlg.querySelector('#rpc-domain').value;
-            state.rpcConfig.port = dlg.querySelector('#rpc-port').value;
-            state.rpcConfig.path = dlg.querySelector('#rpc-path').value;
-            state.rpcConfig.token = dlg.querySelector('#rpc-token').value;
-            state.rpcConfig.dir = dlg.querySelector('#rpc-dir').value;
-            const newColor = dlg.querySelector('#theme-color').value;
+        const closeBtn = modal.querySelector('#ud-rpc-close');
+        const cancelBtn = modal.querySelector('#rpc-cancel');
+        const saveBtn = modal.querySelector('#rpc-save');
+        const closeModal = () => {
+            modal.style.transform = 'translate(-50%, -50%) scale(0.95)';
+            modal.style.opacity = '0';
+            setTimeout(() => modal.remove(), 200);
+        };
+        closeBtn.onclick = closeModal;
+        cancelBtn.onclick = closeModal;
+        saveBtn.onclick = () => {
+            state.rpcConfig.domain = document.getElementById('rpc-domain').value;
+            state.rpcConfig.port = document.getElementById('rpc-port').value;
+            state.rpcConfig.path = document.getElementById('rpc-path').value;
+            state.rpcConfig.token = document.getElementById('rpc-token').value;
+            state.rpcConfig.dir = document.getElementById('rpc-dir').value;
+            const newColor = document.getElementById('theme-color').value;
             CONFIG.themeColor = newColor;
             GM_setValue('themeColor', newColor);
             saveRpcConfig();
             showToast('设置已保存', '#4CAF50');
-            dlg.remove();
-            if (state.panel) {
-                state.panel.remove();
-                state.panel = null;
-                createPanel();
+            closeModal();
+            if (state.floatingBtn) {
+                state.floatingBtn.style.background = newColor;
             }
+            if (state.modal && state.modalVisible) refreshModalContent();
         };
-        dlg.querySelector('#rpc-cancel').onclick = () => dlg.remove();
+        modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
     }
 
     // ---------- 网络拦截 ----------
@@ -1386,16 +1295,15 @@
         GM_registerMenuCommand('🔎 扫描页面链接', scanPageLinks);
         GM_registerMenuCommand('📥 批量导入链接', batchImportLinks);
         GM_registerMenuCommand('🚀 批量RPC推送', batchSendToRPC);
-        GM_registerMenuCommand('🔄 显示/隐藏面板', () => {
-            if (state.panel) state.panel.style.display = state.panel.style.display === 'none' ? 'flex' : 'none';
-        });
+        GM_registerMenuCommand('🔄 显示/隐藏面板', () => toggleModal());
         GM_registerMenuCommand('🚀 强制激活', forceActivate);
     }
 
     function forceActivate() {
-        if (state.panel) return showToast('面板已激活');
+        if (state.floatingBtn) return showToast('面板已激活');
         loadSettings();
-        createPanel();
+        createFloatingButton();
+        createModal();
         installInterceptor();
         enhanceButtons();
         registerMenu();
@@ -1410,7 +1318,8 @@
         }
         loadSettings();
         installInterceptor();
-        createPanel();
+        createFloatingButton();
+        createModal();
         enhanceButtons();
         registerMenu();
         if (isOpenlistPage()) setTimeout(scanOpenlistLinks, 1500);
