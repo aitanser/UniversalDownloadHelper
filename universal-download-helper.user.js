@@ -1,14 +1,14 @@
 // ==UserScript==
-// @name         全能下载助手 | 网盘+Openlist+AList+WebOS
-// @namespace    https://github.com/WatchFleeting/universal-download-helper
-// @version      1.2.0
-// @author       鸿渚
-// @description  自动捕获30+网盘、Openlist、AList、腾飞WebOS直链，支持主动获取网盘API直链。蓝奏云自动解析。支持浏览器/IDM下载、Aria2/cURL命令、BC链接、RPC推送。
+// @name         全能下载助手 | 网盘+Openlist+AList+WebOS (加强版)
+// @namespace    https://github.com/aitanser/universal-download-helper
+// @version      1.3.0
+// @author       aitanser
+// @description  自动捕获30+网盘直链；主动获取百度、阿里、天翼、迅雷、夸克、移动六大网盘直链；支持浏览器/IDM下载、Aria2/cURL命令、BC链接、RPC推送（适配Motrix Next）。
 // @license      MIT
-// @supportURL   https://github.com/WatchFleeting/universal-download-helper/issues
-// @homepageURL  https://github.com/WatchFleeting/universal-download-helper
-// @updateURL    https://raw.githubusercontent.com/WatchFleeting/universal-download-helper/main/universal-download-helper.user.js
-// @downloadURL  https://raw.githubusercontent.com/WatchFleeting/universal-download-helper/main/universal-download-helper.user.js
+// @supportURL   https://github.com/aitanser/universal-download-helper/issues
+// @homepageURL  https://github.com/aitanser/universal-download-helper
+// @updateURL    https://raw.githubusercontent.com/aitanser/universal-download-helper/main/universal-download-helper.user.js
+// @downloadURL  https://raw.githubusercontent.com/aitanser/universal-download-helper/main/universal-download-helper.user.js
 // @match        *://*/*
 // @icon         https://www.google.com/s2/favicons?domain=greasyfork.org
 // @grant        GM_setValue
@@ -28,11 +28,11 @@
 
     // ---------- 配置模块 ----------
     const CONFIG = {
-        version: '1.2.0',
+        version: '1.3.0',
         panelLeft: '20px',
         panelTop: '80px',
         debug: true,
-        maxConcurrent: 3,                // 并发请求数限制
+        maxConcurrent: 3,
         themeColor: '#09AAFF',
         apiPatterns: [
             '/api/download', '/api/sharedownload', '/share/download',
@@ -433,7 +433,8 @@
         a.click();
     }
 
-    // ---------- 网盘主动获取核心模块 (v1.2.0 增强) ----------
+    // ========== 网盘主动获取核心模块（无暗号验证） ==========
+    // 百度网盘相关
     async function getBaiduBDUSS() {
         if (typeof GM_cookie !== 'undefined') {
             return new Promise(resolve => {
@@ -447,8 +448,7 @@
         }
     }
 
-    // 辅助函数：获取各网盘选中项（完整实现）
-    function getSelectedItemsForBaidu() {
+    function getBaiduSelectedFiles() {
         try {
             if (document.querySelector('.wp-s-core-pan')) {
                 const vue = document.querySelector('.wp-s-core-pan').__vue__;
@@ -460,11 +460,46 @@
                 const context = require('system-core:context/context.js').instanceForSystem;
                 return context.list.getSelected().filter(f => f.isdir === 0);
             }
-        } catch (e) { error('百度网盘获取选中项失败', e); }
+        } catch(e) { error('百度网盘获取选中项失败', e); }
         return [];
     }
 
-    function getSelectedItemsForAli() {
+    function getBdstoken() {
+        const match = document.cookie.match(/bdstoken=([^;]+)/);
+        return match ? match[1] : '';
+    }
+
+    async function fetchBaiduLinks() {
+        const isShare = /^\/(s|share)\//.test(location.pathname);
+        if (isShare) {
+            showToast('百度分享页请先转存到自己的网盘，再在主页勾选下载', '#ff9800', 4000);
+            return [];
+        }
+        const selected = getBaiduSelectedFiles();
+        if (!selected.length) throw new Error('请先勾选文件');
+        const bduss = await getBaiduBDUSS();
+        if (!bduss) throw new Error('未登录百度账号');
+        const fidlist = selected.map(f => f.fs_id);
+        const bdstoken = getBdstoken();
+        const url = `https://pan.baidu.com/api/download?app_id=250528&channel=chunlei&clienttype=0&web=1&fidlist=${JSON.stringify(fidlist)}&bdstoken=${bdstoken}`;
+        const resp = await fetch(url, { headers: { 'Cookie': `BDUSS=${bduss}` } }).then(r => r.json());
+        if (resp.errno !== 0) throw new Error(resp.errmsg || '获取失败');
+        const files = [];
+        for (let item of resp.list) {
+            if (item.dlink) {
+                files.push({ url: item.dlink, filename: item.server_filename, size: formatSize(item.size) });
+            }
+        }
+        return files;
+    }
+
+    // 阿里云盘
+    function getAliToken() {
+        const token = localStorage.getItem('token');
+        return token ? JSON.parse(token).access_token : '';
+    }
+
+    function getAliSelectedFiles() {
         try {
             const listDom = document.querySelector('[class*="list"]');
             if (!listDom) return [];
@@ -474,13 +509,41 @@
             let props = fiber.pendingProps;
             if (!props) return [];
             const dataSource = props.dataSource || [];
-            const selectedKeys = props.selectedKeys || [];
+            const selectedKeys = props.selectedKeys ? props.selectedKeys.split(',') : [];
             return dataSource.filter(f => selectedKeys.includes(f.file_id) && f.type === 'file');
-        } catch (e) { error('阿里云盘获取选中项失败', e); }
+        } catch(e) { error('阿里云盘获取选中项失败', e); }
         return [];
     }
 
-    function getSelectedItemsForTianyi() {
+    async function fetchAliLinks() {
+        const isShare = /^\/(s|share)\//.test(location.pathname);
+        if (isShare) {
+            showToast('阿里分享页请先转存到网盘，再在主页勾选下载', '#ff9800', 4000);
+            return [];
+        }
+        const selected = getAliSelectedFiles();
+        if (!selected.length) throw new Error('请先勾选文件');
+        const token = getAliToken();
+        if (!token) throw new Error('未登录阿里云盘');
+        const tasks = selected.map(file => async () => {
+            const resp = await fetch('https://api.aliyundrive.com/v2/file/get_download_url', {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ drive_id: file.drive_id, file_id: file.file_id })
+            }).then(r => r.json());
+            if (resp.url) return { url: resp.url, filename: file.name, size: formatSize(file.size) };
+            return null;
+        });
+        const results = await Promise.all(tasks.map(t => t()));
+        return results.filter(Boolean);
+    }
+
+    // 天翼云盘
+    function getTianyiToken() {
+        return localStorage.getItem('accessToken') || '';
+    }
+
+    function getTianyiSelectedFiles() {
         try {
             if (document.querySelector('.c-file-list')?.__vue__) {
                 const vue = document.querySelector('.c-file-list').__vue__;
@@ -490,11 +553,36 @@
                 const detail = document.querySelector('.info-detail').__vue__.fileDetail;
                 return detail && !detail.isFolder ? [detail] : [];
             }
-        } catch (e) { error('天翼云盘获取选中项失败', e); }
+        } catch(e) { error('天翼云盘获取选中项失败', e); }
         return [];
     }
 
-    function getSelectedItemsForXunlei() {
+    async function fetchTianyiLinks() {
+        const selected = getTianyiSelectedFiles();
+        if (!selected.length) throw new Error('请先勾选文件');
+        const token = getTianyiToken();
+        if (!token) throw new Error('未登录天翼云盘');
+        const tasks = selected.map(file => async () => {
+            const resp = await fetch(`https://cloud.189.cn/api/open/file/getFileDownloadUrl.action?fileId=${file.fileId}`, {
+                headers: { 'Accept': 'application/json', 'AccessToken': token }
+            }).then(r => r.json());
+            if (resp.fileDownloadUrl) return { url: resp.fileDownloadUrl, filename: file.fileName, size: formatSize(file.size) };
+            return null;
+        });
+        const results = await Promise.all(tasks.map(t => t()));
+        return results.filter(Boolean);
+    }
+
+    // 迅雷云盘
+    function getXunleiToken() {
+        for (let i=0; i<localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key.startsWith('credentials_')) return JSON.parse(localStorage.getItem(key));
+        }
+        return null;
+    }
+
+    function getXunleiSelectedFiles() {
         try {
             const items = document.querySelectorAll('.SourceListItem__item--XxpOC');
             const selected = [];
@@ -505,11 +593,33 @@
                 }
             });
             return selected;
-        } catch (e) { error('迅雷云盘获取选中项失败', e); }
+        } catch(e) { error('迅雷云盘获取选中项失败', e); }
         return [];
     }
 
-    function getSelectedItemsForQuark() {
+    async function fetchXunleiLinks() {
+        const isShare = /^\/(s|share)\//.test(location.pathname);
+        if (isShare) {
+            showToast('迅雷分享页请先转存到网盘，再在主页勾选下载', '#ff9800', 4000);
+            return [];
+        }
+        const selected = getXunleiSelectedFiles();
+        if (!selected.length) throw new Error('请先勾选文件');
+        const token = getXunleiToken();
+        if (!token) throw new Error('未登录迅雷云盘');
+        const tasks = selected.map(file => async () => {
+            const resp = await fetch(`https://pan.xunlei.com/rest/pan/xdrive/file?file_id=${file.id}`, {
+                headers: { 'Authorization': `${token.token_type} ${token.access_token}` }
+            }).then(r => r.json());
+            if (resp.web_content_link) return { url: resp.web_content_link, filename: file.name, size: formatSize(file.size) };
+            return null;
+        });
+        const results = await Promise.all(tasks.map(t => t()));
+        return results.filter(Boolean);
+    }
+
+    // 夸克网盘
+    function getQuarkSelectedFiles() {
         try {
             const listDom = document.querySelector('.file-list');
             if (!listDom) return [];
@@ -521,11 +631,36 @@
             const fileList = props.list || [];
             const selectedKeys = props.selectedRowKeys || [];
             return fileList.filter(f => selectedKeys.includes(f.fid) && f.file === true);
-        } catch (e) { error('夸克网盘获取选中项失败', e); }
+        } catch(e) { error('夸克网盘获取选中项失败', e); }
         return [];
     }
 
-    function getSelectedItemsForYidong() {
+    async function fetchQuarkLinks() {
+        const isShare = /^\/(s|share)\//.test(location.pathname);
+        if (isShare) {
+            showToast('夸克分享页请先转存到网盘，再在主页勾选下载', '#ff9800', 4000);
+            return [];
+        }
+        const selected = getQuarkSelectedFiles();
+        if (!selected.length) throw new Error('请先勾选文件');
+        const fids = selected.map(f => f.fid);
+        const resp = await fetch('https://pan.quark.cn/1/clouddrive/file/download', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fids })
+        }).then(r => r.json());
+        if (resp.code !== 0) throw new Error(resp.message || '获取失败');
+        const files = [];
+        for (let item of resp.data) {
+            if (item.download_url) {
+                files.push({ url: item.download_url, filename: item.file_name, size: formatSize(item.size) });
+            }
+        }
+        return files;
+    }
+
+    // 移动云盘
+    function getYidongSelectedFiles() {
         try {
             if (document.querySelector('.main_file_list')?.__vue__) {
                 const vue = document.querySelector('.main_file_list').__vue__;
@@ -541,244 +676,40 @@
                 const dirs = dirList.filter((v, i) => selectedDir.includes(i));
                 return [...files, ...dirs].filter(f => f.fileEtag || f.coName);
             }
-        } catch (e) { error('移动云盘获取选中项失败', e); }
+        } catch(e) { error('移动云盘获取选中项失败', e); }
         return [];
     }
 
-    function getBdstoken() {
-        const match = document.cookie.match(/bdstoken=([^;]+)/);
-        return match ? match[1] : '';
+    async function fetchYidongLinks() {
+        const selected = getYidongSelectedFiles();
+        if (!selected.length) throw new Error('请先勾选文件');
+        const tasks = selected.map(file => async () => {
+            const resp = await fetch('https://yun.139.com/orchestration/personalCloud/catalog/v1.0/getDisk', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ contentID: file.contentID || file.id })
+            }).then(r => r.json());
+            if (resp.data?.downloadURL) return { url: resp.data.downloadURL, filename: file.contentName || file.name, size: formatSize(file.contentSize || file.size) };
+            return null;
+        });
+        const results = await Promise.all(tasks.map(t => t()));
+        return results.filter(Boolean);
     }
-    function getAliToken() {
-        const token = localStorage.getItem('token');
-        return token ? JSON.parse(token).access_token : '';
+
+    // 蓝奏云主动获取
+    async function fetchLanzouLinks() {
+        const direct = await parseLanzou(location.href);
+        return direct ? [{ url: direct, filename: extractFilenameFromUrl(direct) }] : [];
     }
-    function getTianyiToken() {
-        return localStorage.getItem('accessToken') || '';
-    }
-    function getXunleiToken() {
-        for (let i=0; i<localStorage.length; i++) {
-            const key = localStorage.key(i);
-            if (key.startsWith('credentials_')) return JSON.parse(localStorage.getItem(key));
-        }
-        return null;
-    }
-    function baseSizeFormat(size) {
-        if (!size) return '';
+
+    function formatSize(bytes) {
+        if (!bytes) return '';
         const units = ['B','KB','MB','GB','TB'];
         let i = 0;
+        let size = bytes;
         while (size >= 1024 && i < units.length-1) { size /= 1024; i++; }
         return size.toFixed(1) + units[i];
     }
-
-    // 并发控制执行器
-    async function runWithConcurrencyLimit(tasks, limit) {
-        const results = [];
-        const executing = [];
-        for (const task of tasks) {
-            const p = Promise.resolve().then(() => task());
-            results.push(p);
-            if (limit <= tasks.length) {
-                const e = p.then(() => executing.splice(executing.indexOf(e), 1));
-                executing.push(e);
-                if (executing.length >= limit) {
-                    await Promise.race(executing);
-                }
-            }
-        }
-        return Promise.all(results);
-    }
-
-    const PanAdapters = {
-        // 百度网盘（支持主页和分享页）
-        async baidu() {
-            const isShare = /^\/(s|share)\//.test(location.pathname);
-            if (!isShare) {
-                const selected = getSelectedItemsForBaidu();
-                if (!selected.length) throw new Error('请先勾选文件');
-                const bduss = await getBaiduBDUSS();
-                if (!bduss) throw new Error('未登录百度账号');
-                const fidlist = selected.map(f => f.fs_id);
-                const bdstoken = getBdstoken();
-                const url = `https://pan.baidu.com/api/download?app_id=250528&channel=chunlei&clienttype=0&web=1&fidlist=${JSON.stringify(fidlist)}&bdstoken=${bdstoken}`;
-                const resp = await fetch(url, { headers: { 'Cookie': `BDUSS=${bduss}` } }).then(r => r.json());
-                if (resp.errno !== 0) throw new Error(resp.errmsg || '获取失败');
-                const files = [];
-                for (let item of resp.list) {
-                    if (item.dlink) files.push({ url: item.dlink, filename: item.server_filename, size: baseSizeFormat(item.size) });
-                }
-                return files;
-            } else {
-                // 分享页提示转存
-                showToast('提示：请将文件保存到网盘后，在主页勾选下载', '#ff9800', 4000);
-                return [];
-            }
-        },
-        // 阿里云盘
-        async ali() {
-            const isShare = /^\/(s|share)\//.test(location.pathname);
-            if (!isShare) {
-                const selected = getSelectedItemsForAli();
-                if (!selected.length) throw new Error('请先勾选文件');
-                const token = getAliToken();
-                if (!token) throw new Error('未登录阿里云盘');
-                const tasks = selected.map(file => async () => {
-                    const resp = await fetch('https://api.aliyundrive.com/v2/file/get_download_url', {
-                        method: 'POST',
-                        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ drive_id: file.drive_id, file_id: file.file_id })
-                    }).then(r => r.json());
-                    if (resp.url) return { url: resp.url, filename: file.name, size: baseSizeFormat(file.size) };
-                    return null;
-                });
-                const results = await runWithConcurrencyLimit(tasks, CONFIG.maxConcurrent);
-                return results.filter(Boolean);
-            } else {
-                showToast('提示：阿里分享页请先转存到网盘，再在主页勾选下载', '#ff9800', 4000);
-                return [];
-            }
-        },
-        // 天翼云盘
-        async tianyi() {
-            const selected = getSelectedItemsForTianyi();
-            if (!selected.length) throw new Error('请先勾选文件');
-            const token = getTianyiToken();
-            if (!token) throw new Error('未登录天翼云盘');
-            const tasks = selected.map(file => async () => {
-                const resp = await fetch(`https://cloud.189.cn/api/open/file/getFileDownloadUrl.action?fileId=${file.fileId}`, {
-                    headers: { 'Accept': 'application/json', 'AccessToken': token }
-                }).then(r => r.json());
-                if (resp.fileDownloadUrl) return { url: resp.fileDownloadUrl, filename: file.fileName, size: baseSizeFormat(file.size) };
-                return null;
-            });
-            const results = await runWithConcurrencyLimit(tasks, CONFIG.maxConcurrent);
-            return results.filter(Boolean);
-        },
-        // 迅雷云盘
-        async xunlei() {
-            const isShare = /^\/(s|share)\//.test(location.pathname);
-            if (!isShare) {
-                const selected = getSelectedItemsForXunlei();
-                if (!selected.length) throw new Error('请先勾选文件');
-                const token = getXunleiToken();
-                if (!token) throw new Error('未登录迅雷云盘');
-                const tasks = selected.map(file => async () => {
-                    const resp = await fetch(`https://pan.xunlei.com/rest/pan/xdrive/file?file_id=${file.id}`, {
-                        headers: { 'Authorization': `${token.token_type} ${token.access_token}` }
-                    }).then(r => r.json());
-                    if (resp.web_content_link) return { url: resp.web_content_link, filename: file.name, size: baseSizeFormat(file.size) };
-                    return null;
-                });
-                const results = await runWithConcurrencyLimit(tasks, CONFIG.maxConcurrent);
-                return results.filter(Boolean);
-            } else {
-                showToast('提示：迅雷分享页请先转存到网盘，再在主页勾选下载', '#ff9800', 4000);
-                return [];
-            }
-        },
-        // 夸克网盘
-        async quark() {
-            const isShare = /^\/(s|share)\//.test(location.pathname);
-            if (!isShare) {
-                const selected = getSelectedItemsForQuark();
-                if (!selected.length) throw new Error('请先勾选文件');
-                const tasks = selected.map(file => async () => {
-                    const resp = await fetch('https://pan.quark.cn/1/clouddrive/file/download', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ fid: file.fid })
-                    }).then(r => r.json());
-                    if (resp.data?.download_url) return { url: resp.data.download_url, filename: file.file_name, size: baseSizeFormat(file.size) };
-                    return null;
-                });
-                const results = await runWithConcurrencyLimit(tasks, CONFIG.maxConcurrent);
-                return results.filter(Boolean);
-            } else {
-                showToast('提示：夸克分享页请先转存到网盘，再在主页勾选下载', '#ff9800', 4000);
-                return [];
-            }
-        },
-        // 移动云盘
-        async yidong() {
-            const selected = getSelectedItemsForYidong();
-            if (!selected.length) throw new Error('请先勾选文件');
-            const tasks = selected.map(file => async () => {
-                const resp = await fetch('https://yun.139.com/orchestration/personalCloud/catalog/v1.0/getDisk', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ contentID: file.contentID })
-                }).then(r => r.json());
-                if (resp.data?.downloadURL) return { url: resp.data.downloadURL, filename: file.contentName, size: baseSizeFormat(file.contentSize) };
-                return null;
-            });
-            const results = await runWithConcurrencyLimit(tasks, CONFIG.maxConcurrent);
-            return results.filter(Boolean);
-        },
-        // 123云盘分享页
-        async '123pan'() {
-            if (location.pathname.startsWith('/s/')) {
-                const shareKey = location.pathname.split('/s/')[1];
-                const resp = await fetch(`https://www.123pan.com/b/api/share/get?shareKey=${shareKey}`).then(r => r.json());
-                if (resp.code !== 0) throw new Error('获取分享信息失败');
-                const files = resp.data.InfoList.filter(f => f.Type === 0);
-                const tasks = files.map(f => async () => {
-                    const dl = await fetch('https://www.123pan.com/b/api/share/download', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ ShareKey: shareKey, FileID: f.FileId, S3keyFlag: f.S3KeyFlag, Size: f.Size, Etag: f.Etag })
-                    }).then(r => r.json());
-                    if (dl.code === 0 && dl.data.DownloadURL) {
-                        return { url: dl.data.DownloadURL, filename: f.FileName, size: baseSizeFormat(f.Size) };
-                    }
-                    return null;
-                });
-                const results = await runWithConcurrencyLimit(tasks, CONFIG.maxConcurrent);
-                return results.filter(Boolean);
-            }
-            throw new Error('123网盘主页主动获取暂未实现，请使用通用捕获');
-        },
-        // 蓝奏云
-        async lanzou() {
-            const direct = await parseLanzou(location.href);
-            return direct ? [{ url: direct, filename: extractFilenameFromUrl(direct) }] : [];
-        },
-        // UC网盘分享页
-        async uc() {
-            const shareId = location.pathname.match(/\/s\/([a-f0-9]+)/)?.[1];
-            if (!shareId) throw new Error('非UC分享页');
-            const info = await fetch(`https://drive.uc.cn/api/v1/share/info?share_id=${shareId}`).then(r => r.json());
-            if (info.code !== 0) throw new Error('获取信息失败');
-            const tasks = info.data.file_list.map(file => async () => {
-                const dl = await fetch(`https://drive.uc.cn/api/v1/share/download?share_id=${shareId}&file_id=${file.file_id}`).then(r => r.json());
-                if (dl.code === 0 && dl.data.download_url) {
-                    return { url: dl.data.download_url, filename: file.file_name };
-                }
-                return null;
-            });
-            const results = await runWithConcurrencyLimit(tasks, CONFIG.maxConcurrent);
-            return results.filter(Boolean);
-        },
-        // 115网盘分享页
-        async '115'() {
-            const shareCode = location.pathname.split('/s/')[1];
-            if (!shareCode) throw new Error('非115分享页');
-            const info = await fetch(`https://webapi.115.com/share/snap?share_code=${shareCode}`).then(r => r.json());
-            if (info.state !== true) throw new Error('获取分享信息失败');
-            const tasks = info.data.list.map(file => async () => {
-                const resp = await fetch('https://webapi.115.com/share/down', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body: `share_code=${shareCode}&file_id=${file.fid}`
-                }).then(r => r.json());
-                if (resp.state && resp.data?.url) {
-                    return { url: resp.data.url, filename: file.n, size: baseSizeFormat(file.s) };
-                }
-                return null;
-            });
-            const results = await runWithConcurrencyLimit(tasks, CONFIG.maxConcurrent);
-            return results.filter(Boolean);
-        }
-    };
 
     async function fetchPanLinks() {
         const panType = detectPanType();
@@ -791,11 +722,15 @@
 
         try {
             let files = [];
-            if (PanAdapters[panType]) {
-                files = await PanAdapters[panType]();
-            } else {
-                showToast('该网盘主动获取暂未支持，请使用通用捕获', '#ff9800');
-                return;
+            switch(panType) {
+                case 'baidu': files = await fetchBaiduLinks(); break;
+                case 'ali': files = await fetchAliLinks(); break;
+                case 'tianyi': files = await fetchTianyiLinks(); break;
+                case 'xunlei': files = await fetchXunleiLinks(); break;
+                case 'quark': files = await fetchQuarkLinks(); break;
+                case 'yidong': files = await fetchYidongLinks(); break;
+                case 'lanzou': files = await fetchLanzouLinks(); break;
+                default: showToast('该网盘主动获取暂未支持，请使用通用捕获', '#ff9800'); return;
             }
             if (files.length === 0) {
                 showToast('未获取到任何文件，请确认已选中或页面正确', '#ff9800');
@@ -803,13 +738,13 @@
             }
             files.forEach(f => addCapturedFile(f.url, f.filename, getReferer(), f.size));
             showToast(`成功获取 ${files.length} 个直链`, '#4CAF50');
-        } catch (e) {
+        } catch(e) {
             error('获取网盘直链失败', e);
             showToast(e.message || '获取失败，请刷新或检查登录状态', '#f44336');
         }
     }
 
-    // ---------- UI 样式（网盘直链助手风格） ----------
+    // ========== UI 样式及面板 ==========
     function injectStyles() {
         const color = CONFIG.themeColor;
         const css = `
@@ -1095,7 +1030,7 @@
         panel.innerHTML = `
             <div class="ud-header" id="ud-drag-handle">
                 <span class="ud-title">
-                    <span>⚡ 全能下载助手</span>
+                    <span>⚡ 全能下载助手 v${CONFIG.version}</span>
                     <span id="ud-link-count" style="background: ${CONFIG.themeColor}; color: white; padding: 2px 8px; border-radius: 20px; font-size: 12px;">0</span>
                 </span>
                 <button class="ud-close" id="ud-close-panel" title="关闭面板">✕</button>
@@ -1278,7 +1213,7 @@
         const dlg = document.createElement('div');
         dlg.style.cssText = 'position:fixed;top:30%;left:50%;transform:translate(-50%,-50%);background:#fff;color:#333;padding:20px;border-radius:12px;z-index:10002;box-shadow:0 0 20px rgba(0,0,0,0.2);';
         dlg.innerHTML = `
-            <h3 style="color:${CONFIG.themeColor};">⚙️ RPC设置</h3>
+            <h3 style="color:${CONFIG.themeColor};">⚙️ RPC设置 (适配Motrix Next)</h3>
             <div style="display:flex;flex-direction:column;gap:10px;min-width:300px;">
                 <label>域名: <input id="rpc-domain" value="${state.rpcConfig.domain}" style="width:200px;"></label>
                 <label>端口: <input id="rpc-port" value="${state.rpcConfig.port}" style="width:200px;"></label>
@@ -1304,7 +1239,6 @@
             CONFIG.themeColor = newColor;
             GM_setValue('themeColor', newColor);
             saveRpcConfig();
-            document.documentElement.style.setProperty('--ud-primary', newColor);
             showToast('设置已保存', '#4CAF50');
             dlg.remove();
             if (state.panel) {
@@ -1453,7 +1387,7 @@
         GM_registerMenuCommand('📥 批量导入链接', batchImportLinks);
         GM_registerMenuCommand('🚀 批量RPC推送', batchSendToRPC);
         GM_registerMenuCommand('🔄 显示/隐藏面板', () => {
-            if (state.panel) state.panel.style.display = state.panel.style.display === 'none' ? 'block' : 'none';
+            if (state.panel) state.panel.style.display = state.panel.style.display === 'none' ? 'flex' : 'none';
         });
         GM_registerMenuCommand('🚀 强制激活', forceActivate);
     }
@@ -1481,7 +1415,7 @@
         registerMenu();
         if (isOpenlistPage()) setTimeout(scanOpenlistLinks, 1500);
         log(`全能下载助手 v${CONFIG.version} 已启动`);
-        showToast('助手已启动', '#4CAF50', 2000);
+        showToast(`助手 v${CONFIG.version} 已启动 (适配Motrix Next)`, '#4CAF50', 2000);
     }
 
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
