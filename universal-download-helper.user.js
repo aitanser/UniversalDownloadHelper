@@ -2,7 +2,7 @@
 // @name         全能下载助手 | 网盘+Openlist+AList+WebOS
 // @namespace    https://github.com/aitanser/universal-download-helper
 // @version      1.0.0
-// @author       aitanser
+// @author       鸿渚
 // @description  自动捕获30+网盘直链；主动获取百度、阿里、天翼、迅雷、夸克、移动六大网盘直链；支持浏览器/IDM下载、Aria2/cURL命令、BC链接、RPC推送（适配Motrix Next）。
 // @license      MIT
 // @supportURL   https://github.com/aitanser/universal-download-helper/issues
